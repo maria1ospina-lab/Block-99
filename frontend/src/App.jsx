@@ -1,21 +1,58 @@
 import { useEffect, useState } from "react";
+import { PublicProductDetail, PublicStore } from "./PublicStore.jsx";
 
-const API = "http://localhost:3001/api";
+const API = import.meta.env.VITE_API_URL || "http://localhost:3001/api";
+const API_ORIGIN = API.replace(/\/api\/?$/, "");
+const varianteInicial = { talla: "M", color: "Negro", stock: "0" };
+const productoInicial = {
+  nombre: "",
+  descripcion: "",
+  categoria: "",
+  precio: "",
+  imagen: "",
+  estilo: "Urbano"
+};
 const formatoPrecio = new Intl.NumberFormat("es-CO", {
   style: "currency",
   currency: "COP",
   maximumFractionDigits: 0
 });
 
-export default function App() {
+function resolverImagen(imagen) {
+  if (!imagen) return "";
+  if (/^https?:\/\//i.test(imagen)) return imagen;
+  if (imagen.startsWith("/uploads/")) return API_ORIGIN + imagen;
+  return imagen;
+}
+
+function leerPaginaAdmin() {
+  const hash = window.location.hash.replace("#", "");
+  if (hash === "catalogo" || hash === "categorias") return "productos";
+  return ["panel", "productos"].includes(hash) ? hash : "panel";
+}
+function AdminApp() {
   const [correo, setCorreo] = useState("admin@block99.com");
   const [password, setPassword] = useState("");
-  const [token, setToken] = useState(() => sessionStorage.getItem("block99_token") || "");
+  const [token, setToken] = useState(() => localStorage.getItem("block99_token") || "");
   const [productos, setProductos] = useState([]);
   const [categorias, setCategorias] = useState([]);
   const [cargando, setCargando] = useState(false);
+  const [guardandoProducto, setGuardandoProducto] = useState(false);
+  const [eliminandoProducto, setEliminandoProducto] = useState("");
+  const [archivoImagen, setArchivoImagen] = useState(null);
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
+  const [errorProducto, setErrorProducto] = useState("");
+  const [mensajeProducto, setMensajeProducto] = useState("");
+  const [productoForm, setProductoForm] = useState(productoInicial);
+  const [variantesForm, setVariantesForm] = useState([varianteInicial]);
+  const [paginaAdmin, setPaginaAdmin] = useState(leerPaginaAdmin);
+
+  useEffect(() => {
+    const cambiarPagina = () => setPaginaAdmin(leerPaginaAdmin());
+    window.addEventListener("hashchange", cambiarPagina);
+    return () => window.removeEventListener("hashchange", cambiarPagina);
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -63,7 +100,7 @@ export default function App() {
         throw new Error(resultado.message || "No se pudo iniciar sesión");
       }
 
-      sessionStorage.setItem("block99_token", resultado.data.token);
+      localStorage.setItem("block99_token", resultado.data.token);
       setToken(resultado.data.token);
       setPassword("");
     } catch (err) {
@@ -73,12 +110,123 @@ export default function App() {
     }
   }
 
+  function actualizarCampoProducto(evento) {
+    const { name, value } = evento.target;
+    setProductoForm((actual) => ({ ...actual, [name]: value }));
+  }
+
+  function actualizarVariante(indice, campo, valor) {
+    setVariantesForm((actuales) =>
+      actuales.map((variante, posicion) =>
+        posicion === indice ? { ...variante, [campo]: valor } : variante
+      )
+    );
+  }
+
+  function agregarVariante() {
+    setVariantesForm((actuales) => [
+      ...actuales,
+      { talla: "", color: "", stock: "0" }
+    ]);
+  }
+
+  function quitarVariante(indice) {
+    setVariantesForm((actuales) => actuales.filter((_, posicion) => posicion !== indice));
+  }
+
+  async function guardarProducto(evento) {
+    evento.preventDefault();
+    setErrorProducto("");
+    setMensajeProducto("");
+    setGuardandoProducto(true);
+
+    try {
+      let imagen = productoForm.imagen.trim();
+
+      if (archivoImagen) {
+        const formularioImagen = new FormData();
+        formularioImagen.append("imagen", archivoImagen);
+
+        const respuestaImagen = await fetch(API + "/imagenes/webp", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + token },
+          body: formularioImagen
+        });
+        const resultadoImagen = await respuestaImagen.json();
+
+        if (!respuestaImagen.ok || !resultadoImagen.success) {
+          throw new Error(resultadoImagen.message || "No se pudo convertir la imagen");
+        }
+
+        imagen = resultadoImagen.data.imagen;
+      }
+
+      const producto = {
+        ...productoForm,
+        imagen,
+        precio: Number(productoForm.precio),
+        variantes: variantesForm.map((variante) => ({
+          talla: variante.talla.trim(),
+          color: variante.color.trim(),
+          stock: Number(variante.stock)
+        }))
+      };
+
+      const respuesta = await fetch(API + "/productos/store", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token
+        },
+        body: JSON.stringify(producto)
+      });
+      const resultado = await respuesta.json();
+
+      if (!respuesta.ok || !resultado.success) {
+        throw new Error(resultado.message || "No se pudo guardar el producto");
+      }
+
+      setProductos((actuales) => [resultado.data, ...actuales]);
+      setProductoForm(productoInicial);
+      setVariantesForm([varianteInicial]);
+      setArchivoImagen(null);
+      setMensajeProducto("Prenda guardada correctamente.");
+    } catch (err) {
+      setErrorProducto(err.message || "No se pudo conectar con el servidor");
+    } finally {
+      setGuardandoProducto(false);
+    }
+  }
+
+  async function eliminarProductoAdmin(producto) {
+    if (!window.confirm("¿Retirar " + producto.nombre + " del catálogo?")) return;
+    setEliminandoProducto(producto._id);
+    setErrorProducto("");
+    setMensajeProducto("");
+    try {
+      const respuesta = await fetch(API + "/productos/delete/" + producto._id, {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + token }
+      });
+      const resultado = await respuesta.json();
+      if (!respuesta.ok || !resultado.success) throw new Error(resultado.message || "No se pudo retirar la prenda.");
+      setProductos((actuales) => actuales.filter((item) => item._id !== producto._id));
+      setMensajeProducto("Prenda retirada del catálogo.");
+    } catch (err) {
+      setErrorProducto(err.message || "No se pudo conectar con el servidor.");
+    } finally {
+      setEliminandoProducto("");
+    }
+  }
   function cerrarSesion() {
-    sessionStorage.removeItem("block99_token");
+    localStorage.removeItem("block99_token");
     setToken("");
     setProductos([]);
     setCategorias([]);
     setMensaje("");
+    setErrorProducto("");
+    setMensajeProducto("");
+    setArchivoImagen(null);
   }
 
   if (token) {
@@ -87,9 +235,8 @@ export default function App() {
         <aside className="sidebar">
           <a className="brand" href="#panel">BLOCK<span>99</span></a>
           <p className="sidebar-label">PANEL DE CONTROL</p>
-          <a className="side-link active" href="#panel">Resumen</a>
-          <a className="side-link" href="#catalogo">Productos</a>
-          <a className="side-link" href="#categorias">Categorías</a>
+          <a className={"side-link " + (paginaAdmin === "panel" ? "active" : "")} href="#panel">Resumen</a>
+          <a className={"side-link " + (paginaAdmin === "productos" ? "active" : "")} href="#productos">Productos</a>
           <div className="sidebar-bottom">
             <span>ADMINISTRADOR</span>
             <button className="logout-button" onClick={cerrarSesion}>Cerrar sesión</button>
@@ -100,20 +247,21 @@ export default function App() {
           <header className="dashboard-header">
             <div>
               <p className="eyebrow">BLOCK 99 / ADMINISTRACIÓN</p>
-              <h1>Resumen</h1>
+              <h1>{paginaAdmin === "panel" ? "Resumen" : "Productos"}</h1>
             </div>
             <span className="admin-pill"><i /> Sesión activa</span>
           </header>
 
           {mensaje && <p className="notice">{mensaje}</p>}
 
+          {paginaAdmin === "panel" && <>
           <div className="welcome-card">
             <div>
               <p className="eyebrow light">PANEL PRIVADO</p>
               <h2>Tu tienda, bajo control.</h2>
               <p>Administra el catálogo urbano de BLOCK 99 desde un solo lugar.</p>
             </div>
-            <div className="welcome-mark"><span>BLOCK</span><strong>99</strong></div>
+            <img className="welcome-logo" src="/images/block99-logo.png" alt="BLOCK 99" />
           </div>
 
           <div className="stats-grid">
@@ -127,13 +275,10 @@ export default function App() {
               <strong>{cargando ? "…" : categorias.length}</strong>
               <small>Secciones de la tienda</small>
             </article>
-            <article className="stat-card dark-stat">
-              <span>ESTADO DE LA API</span>
-              <strong>EN LÍNEA</strong>
-              <small>Conectada a MongoDB Atlas</small>
-            </article>
-          </div>
+            </div>
 
+                    </>}
+          {paginaAdmin === "productos" && (
           <section className="catalog-section" id="catalogo">
             <div className="section-heading">
               <div>
@@ -143,50 +288,110 @@ export default function App() {
               <span className="item-count">{productos.length} PRENDAS</span>
             </div>
 
-            {productos.length === 0 ? (
-              <div className="empty-state">
-                <span className="empty-icon">＋</span>
-                <h3>El catálogo está listo para comenzar</h3>
-                <p>Cuando registres prendas desde Postman, aparecerán aquí y en MongoDB.</p>
+            <details className="product-form-disclosure">
+              <summary>+ AGREGAR PRODUCTO</summary>
+              <form className="product-form" onSubmit={guardarProducto}>
+              <div className="form-heading">
+                <div>
+                  <p className="eyebrow">NUEVA PRENDA</p>
+                  <h3>Agregar al inventario</h3>
+                </div>
+                <span>Los campos con * son obligatorios</span>
               </div>
-            ) : (
-              <div className="product-grid">
-                {productos.slice(0, 6).map((producto) => (
-                  <article className="product-card" key={producto._id}>
-                    <div className="product-image">
-                      {producto.imagen ? (
-                        <img src={producto.imagen} alt={producto.nombre} />
-                      ) : (
-                        <span>BLOCK 99</span>
-                      )}
-                      <small>{producto.categoria}</small>
-                    </div>
-                    <div className="product-info">
-                      <div>
-                        <span className="product-style">{producto.estilo || "URBANO"}</span>
-                        <h3>{producto.nombre}</h3>
-                      </div>
-                      <strong>{formatoPrecio.format(producto.precio)}</strong>
-                    </div>
-                  </article>
+
+              <div className="form-grid">
+                <label>
+                  Nombre *
+                  <input name="nombre" value={productoForm.nombre} onChange={actualizarCampoProducto} minLength={2} maxLength={120} required placeholder="Ej. Buzo Oversize" />
+                </label>
+                <label>
+                  Categoría *
+                  <input name="categoria" list="categorias-disponibles" value={productoForm.categoria} onChange={actualizarCampoProducto} required placeholder="Ej. Buzos" />
+                  <datalist id="categorias-disponibles">
+                    {categorias.map((categoria) => <option key={categoria._id} value={categoria.nombre} />)}
+                  </datalist>
+                </label>
+                <label className="field-wide">
+                  Descripción *
+                  <textarea name="descripcion" value={productoForm.descripcion} onChange={actualizarCampoProducto} rows={4} maxLength={1000} required placeholder="Describe la prenda, su material, corte y detalles." />
+                </label>
+                <label>
+                  Precio en pesos colombianos *
+                  <input name="precio" type="number" min="0" step="100" value={productoForm.precio} onChange={actualizarCampoProducto} required placeholder="69900" />
+                </label>
+                <label className="field-wide">
+                  O selecciona una imagen para convertirla a WebP
+                  <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(evento) => setArchivoImagen(evento.target.files?.[0] ?? null)} />
+                  <small className="form-help">PNG, JPG o WebP; máximo 8 MB. Al guardar, el backend crea la versión WebP.</small>
+                </label>
+              </div>
+
+              <div className="variants-heading">
+                <div>
+                  <h4>Tallas, colores y stock</h4>
+                  <p>Agrega una variante por cada combinación de talla y color.</p>
+                </div>
+                <button className="secondary-button" type="button" onClick={agregarVariante}>+ Agregar variante</button>
+              </div>
+
+              <div className="variants-list">
+                {variantesForm.map((variante, indice) => (
+                  <div className="variant-row" key={indice}>
+                    <label>
+                      Talla *
+                      <input value={variante.talla} onChange={(evento) => actualizarVariante(indice, "talla", evento.target.value)} required placeholder="M" />
+                    </label>
+                    <label>
+                      Color *
+                      <input value={variante.color} onChange={(evento) => actualizarVariante(indice, "color", evento.target.value)} required placeholder="Negro" />
+                    </label>
+                    <label>
+                      Stock *
+                      <input type="number" min="0" step="1" value={variante.stock} onChange={(evento) => actualizarVariante(indice, "stock", evento.target.value)} required />
+                    </label>
+                    {variantesForm.length > 1 && (
+                      <button className="remove-variant" type="button" onClick={() => quitarVariante(indice)} aria-label={`Quitar variante ${indice + 1}`}>Quitar</button>
+                    )}
+                  </div>
                 ))}
               </div>
-            )}
-          </section>
 
-          <section className="category-strip" id="categorias">
-            <div>
-              <p className="eyebrow">ORGANIZACIÓN</p>
-              <h2>Categorías de la tienda</h2>
-            </div>
-            <div className="category-list">
-              {categorias.length
-                ? categorias.map((categoria) => (
-                    <span key={categoria._id}>{categoria.nombre}</span>
-                  ))
-                : <span>Las categorías aparecerán aquí al registrarlas.</span>}
-            </div>
-          </section>
+              {errorProducto && <p className="form-error" role="alert">{errorProducto}</p>}
+              {mensajeProducto && <p className="form-success" role="status">{mensajeProducto}</p>}
+              <button className="save-product-button" type="submit" disabled={guardandoProducto}>
+                {guardandoProducto ? "GUARDANDO…" : "GUARDAR PRENDA"}
+                <span>↗</span>
+              </button>
+            </form>
+              </details>
+
+            <div className="admin-table-wrap">
+              {productos.length === 0 ? (
+                <div className="empty-state">
+                  <span className="empty-icon">＋</span>
+                  <h3>Tu inventario está listo</h3>
+                  <p>Selecciona “Agregar producto” para registrar la primera prenda.</p>
+                </div>
+              ) : (
+                <table className="admin-products-table">
+                  <thead><tr><th>Imagen</th><th>Nombre</th><th>Categoría</th><th>Precio</th><th>Variantes</th><th>Stock</th><th>Acciones</th></tr></thead>
+                  <tbody>
+                    {productos.map((producto) => (
+                      <tr key={producto._id}>
+                        <td data-label="Imagen"><div className="admin-table-thumb">{producto.imagen ? <img src={resolverImagen(producto.imagen)} alt={producto.nombre} /> : <span>99</span>}</div></td>
+                        <td className="admin-table-name" data-label="Nombre">{producto.nombre}<small>{producto.descripcion}</small></td>
+                        <td data-label="Categoría">{producto.categoria}</td>
+                        <td data-label="Precio">{formatoPrecio.format(producto.precio)}</td>
+                        <td data-label="Tallas y colores">{producto.variantes?.map((variante) => variante.talla + " / " + variante.color).join(", ") || "—"}</td>
+                        <td data-label="Stock">{producto.variantes?.reduce((suma, variante) => suma + Number(variante.stock || 0), 0) ?? 0}</td>
+                        <td data-label="Acciones"><button className="delete-product-button" type="button" onClick={() => eliminarProductoAdmin(producto)} disabled={eliminandoProducto === producto._id}>{eliminandoProducto === producto._id ? "RETIRANDO…" : "RETIRAR"}</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div></section>
+          )}
 
           <footer className="dashboard-footer">
             <span>BLOCK 99 · PEREIRA, COLOMBIA</span>
@@ -246,9 +451,27 @@ export default function App() {
           </button>
 
           <p className="login-footnote">Acceso exclusivo para administración BLOCK 99.</p>
+          <a className="public-store-link" href="/tienda">Visitar tienda pública ↗</a>
         </form>
         <div className="login-copyright">© 2026 BLOCK 99 · TODOS LOS DERECHOS RESERVADOS</div>
       </section>
     </main>
   );
 }
+
+export default function App() {
+  const ruta = window.location.pathname;
+  const detalle = ruta.match(/^\/producto\/([a-fA-F0-9]{24})\/?$/);
+
+  if (ruta === "/tienda" || ruta === "/tienda/" || ruta === "/tienda/productos") return <PublicStore />;
+  if (detalle) return <PublicProductDetail id={detalle[1]} />;
+  return <AdminApp />;
+}
+
+
+
+
+
+
+
+

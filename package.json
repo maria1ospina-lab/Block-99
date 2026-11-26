@@ -3,5 +3,9 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.10",
     "mongoose": "^9.12.2"
+  },
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev"
   }
 }
